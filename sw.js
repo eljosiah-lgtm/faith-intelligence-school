@@ -6,7 +6,7 @@
    - Icons and the manifest use "stale while revalidate": shown from cache, refreshed in the background.
    - Change VERSION only if you add/rename files in CORE below; changing index.html alone
      needs no change here. */
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = 'deltaclassroom-' + VERSION;
 const SCOPE = self.registration.scope;
 const INDEX = new URL('index.html', SCOPE).href;
@@ -38,6 +38,40 @@ self.addEventListener('activate', event => {
   );
 });
 
+/* The app's build number is written inside index.html (APP_BUILD). After a new index.html is
+   saved, every open copy of the app is told the latest build, so it can offer "A new version is ready". */
+function buildOf(res) {
+  return res.clone().text()
+    .then(t => { const m = t.match(/APP_BUILD\s*=\s*"([^"]+)"/); return m ? m[1] : null; })
+    .catch(() => null);
+}
+function announce() {
+  return caches.open(CACHE)
+    .then(c => c.match(INDEX))
+    .then(r => (r ? buildOf(r) : null))
+    .then(build => {
+      if (!build) return;
+      return self.clients.matchAll({ includeUncontrolled: true })
+        .then(list => list.forEach(cl => cl.postMessage({ type: 'latest-build', build })));
+    })
+    .catch(() => {});
+}
+
+self.addEventListener('message', event => {
+  const d = event.data || {};
+  if (d.type === 'whatsnew') {
+    event.waitUntil(announce());
+  } else if (d.type === 'check') {
+    event.waitUntil(
+      fetch(INDEX, { cache: 'no-store' })
+        .then(res => (res && res.ok)
+          ? caches.open(CACHE).then(c => c.put(INDEX, res.clone())).then(announce)
+          : null)
+        .catch(() => {})
+    );
+  }
+});
+
 /* Page and app code: newest version when online, saved copy when offline or slow. */
 function pageResponse(event) {
   const req = event.request;
@@ -45,7 +79,7 @@ function pageResponse(event) {
     .then(res => {
       if (res && res.ok) {
         const copy = res.clone();
-        caches.open(CACHE).then(c => c.put(INDEX, copy));
+        event.waitUntil(caches.open(CACHE).then(c => c.put(INDEX, copy)).then(announce).catch(() => {}));
       }
       return res;
     });
